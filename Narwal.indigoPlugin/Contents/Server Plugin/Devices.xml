@@ -1,0 +1,212 @@
+<?xml version="1.0"?>
+<Devices>
+    <!-- Narwal robot vacuum, modelled as a relay device:
+         ON  = start whole-house clean
+         OFF = return to charging dock
+         All rich telemetry is exposed as custom states below. -->
+    <Device type="relay" id="narwalVacuum">
+        <Name>Narwal Robot Vacuum</Name>
+        <ConfigUI>
+            <Field id="host" type="textfield">
+                <Label>Vacuum IP address / hostname:</Label>
+                <Description>The local IP of the robot (e.g. 192.168.1.50). A static DHCP reservation is recommended.</Description>
+            </Field>
+            <Field id="port" type="textfield" defaultValue="9002">
+                <Label>WebSocket port:</Label>
+                <Description>Default 9002 — leave unless you know otherwise.</Description>
+            </Field>
+
+            <Field id="sep_id" type="separator"/>
+
+            <Field id="labelDiscover" type="label" fontColor="blue" fontSize="small" alwaysUseInDialogHeightCalc="true">
+                <Label>The Device ID and product key are discovered automatically on connect.
+Optionally press the button below to fetch them now (the robot must be powered and on this network).</Label>
+            </Field>
+            <Field id="deviceId" type="textfield">
+                <Label>Device ID (optional — auto-discovered):</Label>
+            </Field>
+            <Field id="topicPrefix" type="textfield">
+                <Label>Product key / topic prefix (optional — auto-discovered):</Label>
+                <Description>e.g. /QxMSPG6VSO for a Narwal Flow 2. Leave blank to auto-detect.</Description>
+            </Field>
+            <Field id="discoverButton" type="button">
+                <Label>Discover Device ID now</Label>
+                <Title>Discover Device ID</Title>
+                <CallbackMethod>discoverDeviceIdButton</CallbackMethod>
+            </Field>
+            <Field id="discoverResult" type="textfield" readonly="true">
+                <Label>Discovery result:</Label>
+            </Field>
+
+            <Field id="sep_map" type="separator"/>
+
+            <Field id="renderMap" type="checkbox" defaultValue="true">
+                <Label>Render map snapshots (PNG)</Label>
+                <Description>Save a rendered house map (with robot + dock position) as a PNG file. Requires Pillow.</Description>
+            </Field>
+            <Field id="mapWhileCleaning" type="checkbox" defaultValue="true" visibleBindingId="renderMap" visibleBindingValue="true">
+                <Label>Update map frequently while cleaning</Label>
+                <Description>When cleaning, re-render the map roughly every 15s to track the robot live; otherwise every ~60s.</Description>
+            </Field>
+            <Field id="showTrail" type="checkbox" defaultValue="false" visibleBindingId="renderMap" visibleBindingValue="true">
+                <Label>Show robot travel trail (orange)</Label>
+                <Description>Draws the robot's path. This includes travel/navigation moves (which can appear to cross walls), so it's off by default — the cleaned-area overlay is the accurate coverage view.</Description>
+            </Field>
+            <Field id="mapDir" type="textfield" visibleBindingId="renderMap" visibleBindingValue="true">
+                <Label>Map output folder (optional):</Label>
+                <Description>Leave blank to use the Indigo install's Web Assets/images/narwal folder. The file is named narwal_map_&lt;deviceId&gt;.png.</Description>
+            </Field>
+            <Field id="overlayCleanedArea" type="checkbox" defaultValue="false" visibleBindingId="renderMap" visibleBindingValue="true">
+                <Label>Overlay cleaned area</Label>
+                <Description>Overlays the robot's swept-area (from live broadcasts) as a translucent tint that fills in as it cleans.</Description>
+            </Field>
+            <Field id="sweptOpacity" type="menu" defaultValue="60" visibleBindingId="overlayCleanedArea" visibleBindingValue="true">
+                <Label>Swept-area opacity:</Label>
+                <List>
+                    <Option value="35">Light (35%)</Option>
+                    <Option value="60">Medium (60%)</Option>
+                    <Option value="80">Strong (80%)</Option>
+                </List>
+            </Field>
+        </ConfigUI>
+
+        <UiDisplayStateId>statusMessage</UiDisplayStateId>
+        <States>
+            <State id="statusMessage">
+                <ValueType>String</ValueType>
+                <TriggerLabel>Status Message</TriggerLabel>
+                <ControlPageLabel>Status Message</ControlPageLabel>
+            </State>
+            <State id="workingStatus">
+                <ValueType>String</ValueType>
+                <TriggerLabel>Working Status</TriggerLabel>
+                <ControlPageLabel>Working Status</ControlPageLabel>
+            </State>
+            <State id="workingStatusCode">
+                <ValueType>Integer</ValueType>
+                <TriggerLabel>Working Status Code</TriggerLabel>
+                <ControlPageLabel>Working Status Code</ControlPageLabel>
+            </State>
+            <State id="batteryLevel">
+                <ValueType>Integer</ValueType>
+                <TriggerLabel>Battery Level</TriggerLabel>
+                <ControlPageLabel>Battery Level</ControlPageLabel>
+            </State>
+            <State id="isCleaning">
+                <ValueType>Boolean</ValueType>
+                <TriggerLabel>Is Cleaning</TriggerLabel>
+                <ControlPageLabel>Is Cleaning</ControlPageLabel>
+            </State>
+            <State id="isDocked">
+                <ValueType>Boolean</ValueType>
+                <TriggerLabel>Is Docked</TriggerLabel>
+                <ControlPageLabel>Is Docked</ControlPageLabel>
+            </State>
+            <State id="isCharging">
+                <ValueType>Boolean</ValueType>
+                <TriggerLabel>Is Charging</TriggerLabel>
+                <ControlPageLabel>Is Charging</ControlPageLabel>
+            </State>
+            <State id="isPaused">
+                <ValueType>Boolean</ValueType>
+                <TriggerLabel>Is Paused</TriggerLabel>
+                <ControlPageLabel>Is Paused</ControlPageLabel>
+            </State>
+            <State id="isReturning">
+                <ValueType>Boolean</ValueType>
+                <TriggerLabel>Is Returning To Dock</TriggerLabel>
+                <ControlPageLabel>Is Returning To Dock</ControlPageLabel>
+            </State>
+            <State id="cleaningArea">
+                <ValueType>Number</ValueType>
+                <TriggerLabel>Cleaning Area (m²)</TriggerLabel>
+                <ControlPageLabel>Cleaning Area (m²)</ControlPageLabel>
+            </State>
+            <State id="cleaningTime">
+                <ValueType>Integer</ValueType>
+                <TriggerLabel>Cleaning Time (min)</TriggerLabel>
+                <ControlPageLabel>Cleaning Time (min)</ControlPageLabel>
+            </State>
+            <State id="firmwareVersion">
+                <ValueType>String</ValueType>
+                <TriggerLabel>Firmware Version</TriggerLabel>
+                <ControlPageLabel>Firmware Version</ControlPageLabel>
+            </State>
+            <State id="cleaningMode">
+                <ValueType>String</ValueType>
+                <TriggerLabel>Cleaning Mode</TriggerLabel>
+                <ControlPageLabel>Cleaning Mode</ControlPageLabel>
+            </State>
+            <State id="fanSpeed">
+                <ValueType>String</ValueType>
+                <TriggerLabel>Fan Speed</TriggerLabel>
+                <ControlPageLabel>Fan Speed</ControlPageLabel>
+            </State>
+            <State id="mopHumidity">
+                <ValueType>String</ValueType>
+                <TriggerLabel>Mop Humidity</TriggerLabel>
+                <ControlPageLabel>Mop Humidity</ControlPageLabel>
+            </State>
+            <State id="atDock">
+                <ValueType>Boolean</ValueType>
+                <TriggerLabel>At Dock (servicing)</TriggerLabel>
+                <ControlPageLabel>At Dock (servicing)</ControlPageLabel>
+            </State>
+            <State id="deviceId">
+                <ValueType>String</ValueType>
+                <TriggerLabel>Device ID</TriggerLabel>
+                <ControlPageLabel>Device ID</ControlPageLabel>
+            </State>
+            <State id="productKey">
+                <ValueType>String</ValueType>
+                <TriggerLabel>Product Key</TriggerLabel>
+                <ControlPageLabel>Product Key</ControlPageLabel>
+            </State>
+            <State id="robotX">
+                <ValueType>Number</ValueType>
+                <TriggerLabel>Robot X</TriggerLabel>
+                <ControlPageLabel>Robot X</ControlPageLabel>
+            </State>
+            <State id="robotY">
+                <ValueType>Number</ValueType>
+                <TriggerLabel>Robot Y</TriggerLabel>
+                <ControlPageLabel>Robot Y</ControlPageLabel>
+            </State>
+            <State id="robotHeading">
+                <ValueType>Number</ValueType>
+                <TriggerLabel>Robot Heading (°)</TriggerLabel>
+                <ControlPageLabel>Robot Heading (°)</ControlPageLabel>
+            </State>
+            <State id="roomCount">
+                <ValueType>Integer</ValueType>
+                <TriggerLabel>Room Count</TriggerLabel>
+                <ControlPageLabel>Room Count</ControlPageLabel>
+            </State>
+            <State id="roomList">
+                <ValueType>String</ValueType>
+                <TriggerLabel>Room List</TriggerLabel>
+                <ControlPageLabel>Room List</ControlPageLabel>
+            </State>
+            <State id="mapPath">
+                <ValueType>String</ValueType>
+                <TriggerLabel>Map Image Path</TriggerLabel>
+                <ControlPageLabel>Map Image Path</ControlPageLabel>
+            </State>
+            <State id="connected">
+                <ValueType>Boolean</ValueType>
+                <TriggerLabel>Connected</TriggerLabel>
+                <ControlPageLabel>Connected</ControlPageLabel>
+            </State>
+            <State id="robotAwake">
+                <ValueType>Boolean</ValueType>
+                <TriggerLabel>Robot Awake</TriggerLabel>
+                <ControlPageLabel>Robot Awake</ControlPageLabel>
+            </State>
+            <State id="lastUpdate">
+                <ValueType>String</ValueType>
+                <TriggerLabel>Last Update</TriggerLabel>
+                <ControlPageLabel>Last Update</ControlPageLabel>
+            </State>
+        </States>
+    </Device>
+</Devices>

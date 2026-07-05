@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<Events>
+    <Event id="cleaningStarted">
+        <Name>Cleaning Started</Name>
+        <ConfigUI>
+            <Field id="deviceId" type="menu">
+                <Label>Vacuum:</Label>
+                <List class="self" filter="self.narwalVacuum" method="deviceListGenerator"/>
+            </Field>
+        </ConfigUI>
+    </Event>
+    <Event id="cleaningFinished">
+        <Name>Cleaning Finished / Returned to Dock</Name>
+        <ConfigUI>
+            <Field id="deviceId" type="menu">
+                <Label>Vacuum:</Label>
+                <List class="self" filter="self.narwalVacuum" method="deviceListGenerator"/>
+            </Field>
+        </ConfigUI>
+    </Event>
+    <Event id="dockedChanged">
+        <Name>Docked State Changed</Name>
+        <ConfigUI>
+            <Field id="deviceId" type="menu">
+                <Label>Vacuum:</Label>
+                <List class="self" filter="self.narwalVacuum" method="deviceListGenerator"/>
+            </Field>
+        </ConfigUI>
+    </Event>
+    <Event id="batteryLow">
+        <Name>Battery Low</Name>
+        <ConfigUI>
+            <Field id="deviceId" type="menu">
+                <Label>Vacuum:</Label>
+                <List class="self" filter="self.narwalVacuum" method="deviceListGenerator"/>
+            </Field>
+            <Field id="threshold" type="textfield" defaultValue="20">
+                <Label>Trigger when battery at or below (%):</Label>
+            </Field>
+        </ConfigUI>
+    </Event>
+</Events>

@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<PluginConfig>
+    <Field id="labelLog" type="label" fontSize="small">
+        <Label>Logging levels. "Indigo Event Log" controls what appears in the main log; "Plugin File Log" controls the detailed rotating plugin log file.</Label>
+    </Field>
+    <Field id="showDebugLevel" type="menu" defaultValue="20">
+        <Label>Indigo Event Log level:</Label>
+        <List>
+            <Option value="5">Verbose Debug</Option>
+            <Option value="10">Debug</Option>
+            <Option value="20">Info</Option>
+            <Option value="30">Warning</Option>
+            <Option value="40">Error</Option>
+        </List>
+    </Field>
+    <Field id="showDebugFileLevel" type="menu" defaultValue="10">
+        <Label>Plugin File Log level:</Label>
+        <List>
+            <Option value="5">Verbose Debug</Option>
+            <Option value="10">Debug</Option>
+            <Option value="20">Info</Option>
+            <Option value="30">Warning</Option>
+            <Option value="40">Error</Option>
+        </List>
+    </Field>
+</PluginConfig>

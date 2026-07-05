@@ -1,0 +1,129 @@
+<?xml version="1.0"?>
+<Actions>
+    <Action id="startClean" deviceFilter="self.narwalVacuum">
+        <Name>Start Clean (whole house)</Name>
+        <CallbackMethod>actionStartClean</CallbackMethod>
+    </Action>
+    <Action id="pauseClean" deviceFilter="self.narwalVacuum">
+        <Name>Pause</Name>
+        <CallbackMethod>actionPause</CallbackMethod>
+    </Action>
+    <Action id="resumeClean" deviceFilter="self.narwalVacuum">
+        <Name>Resume</Name>
+        <CallbackMethod>actionResume</CallbackMethod>
+    </Action>
+    <Action id="stopClean" deviceFilter="self.narwalVacuum">
+        <Name>Stop (force end)</Name>
+        <CallbackMethod>actionStop</CallbackMethod>
+    </Action>
+    <Action id="returnToBase" deviceFilter="self.narwalVacuum">
+        <Name>Return to Dock</Name>
+        <CallbackMethod>actionReturnToBase</CallbackMethod>
+    </Action>
+    <Action id="locate" deviceFilter="self.narwalVacuum">
+        <Name>Locate (robot says "I'm here")</Name>
+        <CallbackMethod>actionLocate</CallbackMethod>
+    </Action>
+
+    <Action id="sepA" type="separator"/>
+
+    <Action id="setFanSpeed" deviceFilter="self.narwalVacuum">
+        <Name>Set Fan Speed</Name>
+        <CallbackMethod>actionSetFanSpeed</CallbackMethod>
+        <ConfigUI>
+            <Field id="fanLevel" type="menu" defaultValue="3">
+                <Label>Fan speed:</Label>
+                <List>
+                    <Option value="0">Quiet</Option>
+                    <Option value="1">Normal</Option>
+                    <Option value="2">Strong</Option>
+                    <Option value="3">Max</Option>
+                </List>
+            </Field>
+        </ConfigUI>
+    </Action>
+    <Action id="setMopHumidity" deviceFilter="self.narwalVacuum">
+        <Name>Set Mop Humidity</Name>
+        <CallbackMethod>actionSetMopHumidity</CallbackMethod>
+        <ConfigUI>
+            <Field id="mopLevel" type="menu" defaultValue="2">
+                <Label>Mop wetness:</Label>
+                <List>
+                    <Option value="0">Dry</Option>
+                    <Option value="1">Normal</Option>
+                    <Option value="2">Wet</Option>
+                </List>
+            </Field>
+        </ConfigUI>
+    </Action>
+
+    <Action id="sepB" type="separator"/>
+
+    <Action id="washMop" deviceFilter="self.narwalVacuum">
+        <Name>Wash Mop (at station)</Name>
+        <CallbackMethod>actionWashMop</CallbackMethod>
+    </Action>
+    <Action id="dryMop" deviceFilter="self.narwalVacuum">
+        <Name>Dry Mop (at station)</Name>
+        <CallbackMethod>actionDryMop</CallbackMethod>
+    </Action>
+    <Action id="emptyDustbin" deviceFilter="self.narwalVacuum">
+        <Name>Empty Dustbin (at station)</Name>
+        <CallbackMethod>actionEmptyDustbin</CallbackMethod>
+    </Action>
+
+    <Action id="sepC" type="separator"/>
+
+    <Action id="cleanRooms" deviceFilter="self.narwalVacuum">
+        <Name>Clean Selected Rooms</Name>
+        <CallbackMethod>actionCleanRooms</CallbackMethod>
+        <ConfigUI>
+            <Field id="labelRooms" type="label" fontSize="small">
+                <Label>Select one or more rooms to clean, then set the cleaning options. The room list is populated from the robot's saved map (fetched on connect).</Label>
+            </Field>
+            <Field id="rooms" type="list">
+                <Label>Rooms:</Label>
+                <List class="self" method="roomListGenerator" dynamicReload="true"/>
+            </Field>
+            <Field id="suction" type="menu" defaultValue="3">
+                <Label>Suction:</Label>
+                <List>
+                    <Option value="0">Quiet</Option>
+                    <Option value="1">Normal</Option>
+                    <Option value="2">Strong</Option>
+                    <Option value="3">Max</Option>
+                </List>
+            </Field>
+            <Field id="mop" type="menu" defaultValue="2">
+                <Label>Mop wetness:</Label>
+                <List>
+                    <Option value="0">Dry (vacuum-focused)</Option>
+                    <Option value="1">Normal</Option>
+                    <Option value="2">Wet</Option>
+                </List>
+            </Field>
+            <Field id="labelMop" type="label" fontSize="small" fontColor="darkgray">
+                <Label>The Flow vacuums and mops in one pass; set Mop wetness to Dry for a vacuum-focused clean.</Label>
+            </Field>
+            <Field id="passes" type="menu" defaultValue="1">
+                <Label>Passes:</Label>
+                <List>
+                    <Option value="1">1 (single)</Option>
+                    <Option value="2">2</Option>
+                    <Option value="3">3</Option>
+                </List>
+            </Field>
+        </ConfigUI>
+    </Action>
+
+    <Action id="sepD" type="separator"/>
+
+    <Action id="refreshMap" deviceFilter="self.narwalVacuum">
+        <Name>Refresh Map Now</Name>
+        <CallbackMethod>actionRefreshMap</CallbackMethod>
+    </Action>
+    <Action id="refreshStatus" deviceFilter="self.narwalVacuum">
+        <Name>Refresh Status Now</Name>
+        <CallbackMethod>actionRefreshStatus</CallbackMethod>
+    </Action>
+</Actions>

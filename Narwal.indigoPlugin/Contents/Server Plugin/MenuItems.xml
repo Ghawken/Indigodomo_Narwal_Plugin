@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<MenuItems>
+    <MenuItem id="reconnectAll">
+        <Name>Reconnect All Vacuums</Name>
+        <CallbackMethod>menuReconnectAll</CallbackMethod>
+    </MenuItem>
+    <MenuItem id="logStatus">
+        <Name>Log Vacuum Status</Name>
+        <CallbackMethod>menuLogStatus</CallbackMethod>
+    </MenuItem>
+    <MenuItem id="dumpMapStructure">
+        <Name>Dump Map Broadcast Structure (Debug)</Name>
+        <CallbackMethod>menuDumpMapStructure</CallbackMethod>
+    </MenuItem>
+</MenuItems>
