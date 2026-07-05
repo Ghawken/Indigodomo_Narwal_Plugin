@@ -28,6 +28,8 @@ from narwal_client.map_renderer import (
     COLOR_UNASSIGNED_FLOOR,
     COLOR_UNASSIGNED_OBSTACLE,
     COLOR_FALLBACK,
+    OBSTACLE_COLORS,
+    OBSTACLE_COLOR_DEFAULT,
     _darken,
     decompress_map,
     _decode_packed_varints,
@@ -102,7 +104,9 @@ def build_base(map_data: Any) -> dict | None:
     elif len(pixels) > expected:
         pixels = pixels[:expected]
 
-    img = Image.new("RGB", (w, h), COLOR_UNKNOWN)
+    # Transparent background (unknown/outside stays fully transparent) so the PNG
+    # can be overlaid on a dashboard; mapped cells are opaque.
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     px = img.load()
     sum_x: dict[int, int] = {}
     sum_y: dict[int, int] = {}
@@ -110,21 +114,21 @@ def build_base(map_data: Any) -> dict | None:
 
     for i, val in enumerate(pixels):
         if val == 0:
-            continue
+            continue  # unknown/outside -> transparent
         x = i % w
         y = i // w
         if val == 0x20:
-            px[x, y] = COLOR_UNASSIGNED_FLOOR
+            px[x, y] = COLOR_UNASSIGNED_FLOOR + (255,)
         elif val == 0x28:
-            px[x, y] = COLOR_UNASSIGNED_OBSTACLE
+            px[x, y] = COLOR_UNASSIGNED_OBSTACLE + (255,)
         else:
             room_id = val >> 8
             ptype = val & 0xFF
             base = ROOM_COLORS[room_id - 1] if 1 <= room_id <= len(ROOM_COLORS) else COLOR_FALLBACK
             if ptype & 0x10:  # wall/border
-                px[x, y] = _darken(base)
+                px[x, y] = _darken(base) + (255,)
             else:
-                px[x, y] = base
+                px[x, y] = base + (255,)
                 sum_x[room_id] = sum_x.get(room_id, 0) + x
                 sum_y[room_id] = sum_y.get(room_id, 0) + y
                 count[room_id] = count.get(room_id, 0) + 1
@@ -156,48 +160,53 @@ def _draw_label(draw, cx: float, cy: float, text: str, font) -> None:
 
 def _render_cleaned_cells(cells, w: int, h: int, out_w: int, out_h: int,
                           alpha: int, dilate: int = 1):
-    """Build a translucent swept-area layer from cleaned-cell indices.
+    """Build a translucent, FILLED swept-area layer from cleaned-cell indices.
 
     ``cells`` is an iterable of linear indices into the ``w`` x ``h`` map grid
-    (index = y*w + x), decoded from display_map field 7. Each cell is painted
-    together with its neighbours (``dilate`` radius) so the robot's sampled path
-    reads as a filled mop-width swath rather than a 1px line. Painted at grid
-    resolution, flipped to match the base map, then upscaled to the output size.
-    ``alpha`` (0-255) controls how strongly the swept tint shows over the rooms.
+    (index = y*w + x), decoded from display_map field 7 — these are the robot's
+    path cells (a thin trace), so painted directly they look like stripes/edges.
+    We instead build a binary mask and apply a morphological CLOSE (dilate then
+    erode) which merges adjacent cleaning passes into solid coverage without
+    growing the outer boundary much. ``alpha`` sets the tint opacity.
     """
-    from PIL import Image
+    from PIL import Image, ImageFilter
 
     if not cells or w <= 0 or h <= 0:
         return None
     try:
-        color = (CLEANED_RGB[0], CLEANED_RGB[1], CLEANED_RGB[2], max(0, min(255, int(alpha))))
+        mask = Image.new("L", (w, h), 0)
+        mpx = mask.load()
         wh = w * h
-        layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        lpx = layer.load()
         painted = 0
         minx = miny = 10 ** 9
         maxx = maxy = -1
-        r = max(0, int(dilate))
         for idx in cells:
             if not (0 <= idx < wh):
                 continue
-            x = idx % w
-            y = idx // w
-            for ny in range(max(0, y - r), min(h, y + r + 1)):
-                for nx in range(max(0, x - r), min(w, x + r + 1)):
-                    lpx[nx, ny] = color
-                    painted += 1
+            x, y = idx % w, idx // w
+            mpx[x, y] = 255
+            painted += 1
             minx = min(minx, x); maxx = max(maxx, x)
             miny = min(miny, y); maxy = max(maxy, y)
         if painted == 0:
-            _LOGGER.debug("cleaned overlay: 0 in-range cells of %d (indices out of grid?)", len(list(cells)))
+            _LOGGER.debug("cleaned overlay: 0 in-range cells of %d", len(list(cells)))
             return None
+
+        # Morphological close: dilate (radius 4) then erode (radius 3) to bridge
+        # the gaps between passes and fill the swept area into a solid region.
+        mask = mask.filter(ImageFilter.MaxFilter(9))
+        mask = mask.filter(ImageFilter.MaxFilter(9))
+        mask = mask.filter(ImageFilter.MinFilter(7))
+
         _LOGGER.debug(
-            "cleaned overlay: painted ~%d px from %d cells, grid bbox x[%d..%d] y[%d..%d] (map %dx%d)",
-            painted, len(cells), minx, maxx, miny, maxy, w, h,
+            "cleaned overlay: %d cells -> filled mask, grid bbox x[%d..%d] y[%d..%d] (map %dx%d)",
+            painted, minx, maxx, miny, maxy, w, h,
         )
-        layer = layer.transpose(Image.FLIP_TOP_BOTTOM)
-        return layer.resize((out_w, out_h), Image.NEAREST)
+        mask = mask.transpose(Image.FLIP_TOP_BOTTOM).resize((out_w, out_h), Image.NEAREST)
+        color = (CLEANED_RGB[0], CLEANED_RGB[1], CLEANED_RGB[2], max(0, min(255, int(alpha))))
+        solid = Image.new("RGBA", (out_w, out_h), color)
+        transparent = Image.new("RGBA", (out_w, out_h), (0, 0, 0, 0))
+        return Image.composite(solid, transparent, mask)
     except Exception:
         _LOGGER.debug("cleaned-cell overlay render failed", exc_info=True)
         return None
@@ -210,6 +219,7 @@ def compose(
     trail: Sequence[tuple[float, float]] | None,
     cleaned=None,
     cleaned_alpha: int = DEFAULT_CLEANED_ALPHA,
+    caption: str = "",
 ) -> bytes:
     """Upscale the cached base map and draw the swept area, trail, dock, labels
     and robot on top at full resolution. Returns PNG bytes, or b"" on failure.
@@ -223,7 +233,9 @@ def compose(
 
     w, h = base["w"], base["h"]
     scale = scale_for(w, h)
-    img = base["img"].resize((w * scale, h * scale), Image.NEAREST).convert("RGB")
+    img = base["img"].resize((w * scale, h * scale), Image.NEAREST)  # RGBA, transparent bg
+    if img.mode != "RGBA":
+        img = img.convert("RGBA")
 
     def to_img(gx: float, gy: float) -> tuple[float, float]:
         return gx * scale, (h - 1 - gy) * scale
@@ -233,7 +245,7 @@ def compose(
         overlay = _render_cleaned_cells(cleaned, w, h, img.width, img.height,
                                         cleaned_alpha, dilate=CLEANED_DILATE)
         if overlay is not None:
-            img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+            img = Image.alpha_composite(img, overlay)
 
     draw = ImageDraw.Draw(img)
 
@@ -263,6 +275,32 @@ def compose(
         draw.ellipse([dx - dr, dy - dr, dx + dr, dy + dr], fill=DOCK_FILL,
                      outline=DOCK_OUTLINE, width=2)
 
+    # Furniture / obstacle annotations (static, from get_map field 2.32).
+    obstacles = getattr(map_data, "obstacles", None)
+    if obstacles:
+        ofont = _load_font(max(10, min(24, scale * 2)))
+        for obs in obstacles:
+            try:
+                gx, gy = obs.to_grid_coords(map_data.origin_x, map_data.origin_y)
+            except Exception:
+                continue
+            if not (0 <= gx < w and 0 <= gy < h):
+                continue
+            cx, cy = to_img(gx, gy)
+            hw = max(3, (obs.width / 2.0) * scale)
+            hh = max(3, (obs.height / 2.0) * scale)
+            color = OBSTACLE_COLORS.get(obs.type_id, OBSTACLE_COLOR_DEFAULT)
+            draw.rectangle([cx - hw, cy - hh, cx + hw, cy + hh],
+                           outline=color, width=max(1, scale // 3))
+            label = obs.display_name
+            if label:
+                lb = ofont.getbbox(label)
+                lx = cx - (lb[2] - lb[0]) / 2 - lb[0]
+                ly = cy - hh - (lb[3] - lb[1]) - 2 * scale - lb[1]
+                for ox, oy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    draw.text((lx + ox, ly + oy), label, fill=(0, 0, 0), font=ofont)
+                draw.text((lx, ly), label, fill=color, font=ofont)
+
     # Room labels — drawn post-scale with a properly sized font (crisp).
     font = _load_font(max(12, min(40, scale * 3)))
     for rid, (gx, gy) in base["centroids"].items():
@@ -287,6 +325,17 @@ def compose(
                     hx = cx + math.cos(rad) * r * 1.8
                     hy = cy - math.sin(rad) * r * 1.8
                     draw.line([cx, cy, hx, hy], fill=ROBOT_OUTLINE, width=max(2, scale // 2))
+
+    # Caption (burned-in timestamp + stats) so freshness is visible when the PNG
+    # is opened directly in a viewer that caches. Bottom-left, dark backing.
+    if caption:
+        cfont = _load_font(max(16, scale * 5))
+        bbox = draw.textbbox((0, 0), caption, font=cfont)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        pad = max(6, scale * 2)
+        x0, y0 = pad, img.height - th - 3 * pad
+        draw.rectangle([x0 - pad, y0 - pad, x0 + tw + pad, y0 + th + pad], fill=(0, 0, 0))
+        draw.text((x0 - bbox[0], y0 - bbox[1]), caption, fill=(255, 255, 255), font=cfont)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")

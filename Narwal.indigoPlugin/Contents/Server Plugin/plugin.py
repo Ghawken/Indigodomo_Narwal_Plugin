@@ -92,6 +92,11 @@ class Plugin(indigo.PluginBase):
         self._cleaned_cells: dict[int, set] = {}
         # One-shot: next display_map broadcast dumps its full structure to the log.
         self._dump_map_next = False
+        # dev.id -> current robot session_id (per power-cycle, not per-clean).
+        self._session: dict[int, str] = {}
+        # dev.id -> last cleaning_time seen. A NEW clean is detected when this
+        # resets/decreases (session_id stays constant across cleans on this robot).
+        self._clean_time: dict[int, int] = {}
 
         # dev.id -> previous snapshot for edge-triggered events
         self._prev: dict[int, dict[str, Any]] = {}
@@ -172,6 +177,8 @@ class Plugin(indigo.PluginBase):
         self._trail.pop(dev.id, None)
         self._base_map_cache.pop(dev.id, None)
         self._cleaned_cells.pop(dev.id, None)
+        self._session.pop(dev.id, None)
+        self._clean_time.pop(dev.id, None)
         self.logger.info("%s: comm stopped", dev.name)
 
     def _schedule_connect(self, dev_id: int) -> None:
@@ -280,11 +287,43 @@ class Plugin(indigo.PluginBase):
     # ------------------------------------------------------------------ #
     def _on_state_update(self, dev_id: int, state: NarwalState) -> None:
         try:
+            self._check_new_clean(dev_id, state)
             self._update_device_states(dev_id, state)
             self._sample_trail(dev_id, state)
             self._evaluate_triggers(dev_id, state)
         except Exception:
             self.logger.exception("%s: error handling state update", dev_id)
+
+    def _check_new_clean(self, dev_id: int, state: NarwalState) -> None:
+        """Reset coverage/trail when a genuinely new clean starts.
+
+        The robot's session_id is per power-cycle (constant across many cleans),
+        so we key primarily on cleaning_time resetting/decreasing — it counts up
+        within a clean and returns to ~0 for a new one. A mid-clean vacuum->mop
+        dock visit does NOT reset cleaning_time, so coverage is preserved then."""
+        sid = state.session_id
+        ct = state.cleaning_time
+        prev_sid = self._session.get(dev_id)
+        prev_ct = self._clean_time.get(dev_id)
+        self._session[dev_id] = sid or prev_sid
+        self._clean_time[dev_id] = ct
+
+        new_clean = False
+        if prev_sid is not None and sid and sid != prev_sid:
+            new_clean = True
+        # cleaning_time went backwards by a clear margin -> a new clean began
+        if prev_ct is not None and ct is not None and ct + 30 < prev_ct:
+            new_clean = True
+        if new_clean:
+            self._reset_coverage(dev_id, "new clean detected")
+
+    def _reset_coverage(self, dev_id: int, reason: str) -> None:
+        dev = indigo.devices.get(dev_id)
+        self.logger.info("%s: %s — resetting coverage & trail",
+                         dev.name if dev else dev_id, reason)
+        self._trail[dev_id] = []
+        self._cleaned_cells[dev_id] = set()
+        self._last_map_render.pop(dev_id, None)
 
     def _sample_trail(self, dev_id: int, state: NarwalState) -> None:
         """Append the robot's current grid position to this session's trail.
@@ -336,12 +375,15 @@ class Plugin(indigo.PluginBase):
             self.logger.debug("%s: raw display_map handling failed", dev_id, exc_info=True)
 
     def _cleaned_area_m2(self, dev_id: int, state: NarwalState) -> float:
-        """Live cleaned area = distinct cleaned map cells x cell area.
-
-        Each map cell is resolution x resolution (mm); at ~60mm/px a cell is
-        0.0036 m². This replaces the robot's field 13, which is stuck at a
-        constant 18000 cm² on this firmware. Falls back to field 13 only when we
-        have no cleaned cells yet (e.g. overlay data not arrived)."""
+        """Cleaned area in m² from working_status field 2 (coveredArea, float32,
+        already m²) — upstream PR #51. This is the robot's own figure and matches
+        the Narwal app; it grows through the clean (e.g. 3.3 -> 18.0 m²). The
+        vendored library instead reads field 13, a station-dry timer stuck at
+        18000 (=1.8 m²) — that's the wrong one. Falls back to the distinct
+        cleaned-cell count, then field 13, only if field 2 is absent."""
+        area = self._f32(state.raw_working_status.get("2"))
+        if area is not None and 0 <= area < 100000:
+            return round(area, 2)
         cells = self._cleaned_cells.get(dev_id)
         res = state.map_data.resolution if state.map_data else 0
         if cells and res > 0:
@@ -559,20 +601,46 @@ class Plugin(indigo.PluginBase):
         is_charging = is_docked and state.battery_level < 100
         return is_cleaning, is_docked, is_charging, is_returning, physically_docked
 
-    @staticmethod
-    def _parse_clean_config(raw_base_status: dict):
-        """Extract (suction, mop_humidity) from base_status field 48.
+    # Enum tables aligned with upstream PR #50 (WorkMode/FanLevel/MopHumidity are
+    # 1-indexed in the CleanParam schema, distinct from the older 0-indexed enums
+    # in the vendored client). See _parse_clean_config.
+    _WORK_MODE = {1: "Vacuum", 2: "Mop", 3: "Vacuum then Mop", 4: "Vacuum & Mop"}
+    _FAN_LEVELS = {1: "Mute", 2: "Normal", 3: "Strong", 4: "Deep", 5: "Super"}
+    _WATER_LEVELS = {1: "Dry", 2: "Normal", 3: "Wet"}
+    # base_status tank/bin states (PR #52): 1=OK, 2/3/4=problem.
+    _WATER_TANK = {1: "OK", 2: "Empty", 3: "Abnormal", 4: "Not installed"}
+    _BIN_STATE = {1: "OK", 2: "Full", 3: "Abnormal", 4: "Not installed"}
 
-        Field 48.1[0].5.1 = {1: suction, 2: mop_humidity} — same schema as the
-        clean-command payload (confirmed on Flow 2: {1:3, 2:2} = Max suction,
-        Wet mop). Returns (None, None) if not present.
-        """
+    @staticmethod
+    def _f32(v):
+        """Interpret an int (or float) as an IEEE-754 float32."""
+        import struct
+        if isinstance(v, float):
+            return v
+        if isinstance(v, int):
+            try:
+                return struct.unpack("<f", struct.pack("<I", v & 0xFFFFFFFF))[0]
+            except (struct.error, ValueError):
+                return None
+        return None
+
+    @staticmethod
+    def _parse_clean_config(raw_base_status: dict) -> dict:
+        """Extract the running clean config from base_status field 48.1[0].5.1.
+
+        Schema (upstream PR #50 CleanParam): {1: work_mode, 2: fan, 3: mop_strength,
+        4: water}. Confirmed on Flow 2: {1:3, 2:2} → work_mode 3 = 'Vacuum then Mop'
+        (matches the user's routine), fan 2 = 'Normal'. Returns {} if absent."""
         try:
-            entry = raw_base_status["48"]["1"][0]
-            cfg = entry["5"]["1"]
-            return int(cfg.get("1")), int(cfg.get("2"))
-        except (KeyError, IndexError, TypeError, ValueError):
-            return None, None
+            cfg = raw_base_status["48"]["1"][0]["5"]["1"]
+        except (KeyError, IndexError, TypeError):
+            return {}
+        out = {}
+        for fld, name in (("1", "mode"), ("2", "fan"), ("3", "mop_strength"), ("4", "water")):
+            v = cfg.get(fld)
+            if isinstance(v, int):
+                out[name] = v
+        return out
 
     def _update_device_states(self, dev_id: int, state: NarwalState) -> None:
         dev = indigo.devices.get(dev_id)
@@ -584,17 +652,22 @@ class Plugin(indigo.PluginBase):
         rooms = state.map_data.rooms if state.map_data else []
         room_names = ", ".join(r.display_name for r in rooms)
 
-        suction, mop = self._parse_clean_config(state.raw_base_status)
-        fan_name = self._fan_name(suction)
-        mop_name = self._mop_name(mop)
-        clean_mode = self._clean_mode_name(suction, mop)
+        cfg = self._parse_clean_config(state.raw_base_status)
+        fan_name = self._fan_name(state.raw_base_status)
+        mop_name = self._mop_name(state.raw_base_status)
+        clean_mode = self._clean_mode_name(cfg)
         area_m2 = self._cleaned_area_m2(dev_id, state)
+        current_room = self._current_room_name(state)
+        progress = self._cleaning_progress(state)
+        station_activity = self._station_activity(state.raw_base_status)
+        user_action = self._user_action(state.raw_base_status)
 
         disp = state.map_display_data
         key_values = [
             {"key": "statusMessage",
              "value": self._status_message(state, is_cleaning, is_docked, is_returning,
-                                           is_charging, at_dock, clean_mode, area_m2)},
+                                           is_charging, at_dock, clean_mode, area_m2,
+                                           progress, station_activity)},
             {"key": "workingStatus", "value": state.working_status.name},
             {"key": "workingStatusCode", "value": int(state.working_status)},
             {"key": "batteryLevel", "value": int(state.battery_level),
@@ -609,6 +682,11 @@ class Plugin(indigo.PluginBase):
             {"key": "cleaningTime", "value": int(state.cleaning_time // 60),
              "uiValue": f"{int(state.cleaning_time // 60)} min"},
             {"key": "cleaningMode", "value": clean_mode},
+            {"key": "currentRoom", "value": current_room},
+            {"key": "cleaningProgress", "value": progress if progress is not None else 0,
+             "uiValue": f"{progress}%" if progress is not None else ""},
+            {"key": "stationActivity", "value": station_activity},
+            {"key": "userAction", "value": user_action},
             {"key": "fanSpeed", "value": fan_name},
             {"key": "mopHumidity", "value": mop_name},
             {"key": "firmwareVersion", "value": state.firmware_version or ""},
@@ -628,6 +706,7 @@ class Plugin(indigo.PluginBase):
             key_values.append({"key": "robotY", "value": round(disp.robot_y, 2)})
             key_values.append({"key": "robotHeading", "value": round(disp.robot_heading, 1)})
 
+        key_values.extend(self._station_states(state))
         self._safe_update(dev, key_values)
 
         # Battery icon on the device (relay devices show a battery indicator).
@@ -641,10 +720,13 @@ class Plugin(indigo.PluginBase):
 
     @staticmethod
     def _status_message(state, is_cleaning, is_docked, is_returning, is_charging,
-                        at_dock, clean_mode="", area_m2=0.0) -> str:
+                        at_dock, clean_mode="", area_m2=0.0, progress=None,
+                        station_activity="") -> str:
         if at_dock:
-            # The robot reports CLEANING while docked servicing (mop wash/refill)
-            # mid-task; distinguish that from a finished/charging dock state.
+            # The robot reports CLEANING while docked servicing (mop wash etc.)
+            # mid-task; show the specific station activity when we can identify it.
+            if station_activity:
+                return f"At dock — {station_activity}"
             if state.working_status in (WorkingStatus.CLEANING, WorkingStatus.CLEANING_ALT):
                 return "At dock — servicing"
             if state.battery_level >= 100:
@@ -660,43 +742,122 @@ class Plugin(indigo.PluginBase):
             parts = ["Cleaning"]
             if clean_mode and clean_mode not in ("", "—"):
                 parts.append(clean_mode)
+            if progress is not None:
+                parts.append(f"{progress}%")
             parts.append(f"{area_m2:g} m²")
             return " · ".join(parts)
         if is_docked:
             return "Charged" if state.battery_level >= 100 else f"Docked ({state.battery_level}%)"
         return state.working_status.name.replace("_", " ").title()
 
-    @staticmethod
-    def _fan_name(suction):
-        if suction is None:
+    # LIVE suction/mop settings broadcast in base_status (PR #34/#31) — distinct
+    # from the CleanParam config in field 48. These update in real time.
+    _LIVE_FAN = {1: "Quiet", 2: "Normal", 3: "Strong", 4: "Super Powerful"}
+    _LIVE_MOP = {1: "Slightly Dry", 2: "Standard", 3: "Slightly Wet"}
+
+    def _fan_name(self, rbs: dict) -> str:
+        return self._LIVE_FAN.get(rbs.get("26"), "")
+
+    def _mop_name(self, rbs: dict) -> str:
+        return self._LIVE_MOP.get(rbs.get("29"), "")
+
+    def _clean_mode_name(self, cfg: dict) -> str:
+        return self._WORK_MODE.get(cfg.get("mode"), "")
+
+    # Station activity from base_status field 48.1 (PR #34). An entry with sub-key
+    # 1==1 is the active module; its 2.1 is the activity code. Value->name is
+    # TENTATIVE pending labelled captures (works like we nailed the dock/phase).
+    _STATION_ACTIVITY = {
+        1: "Mop washing", 2: "Mop drying", 3: "Dust emptying",
+        4: "Dust-bag drying", 5: "Disinfecting",
+    }
+    # base_status field 3.16 = a prompt for the user to do something.
+    _USER_ACTION = {2: "Fill water tank", 3: "Empty / return after clean",
+                    4: "Ready — start clean"}
+
+    def _station_activity(self, rbs: dict) -> str:
+        f48 = rbs.get("48")
+        if not isinstance(f48, dict):
             return ""
-        try:
-            return FanLevel(suction).name.title()
-        except ValueError:
-            return f"Level {suction}"
+        entries = f48.get("1", [])
+        if isinstance(entries, dict):
+            entries = [entries]
+        for e in entries:
+            if isinstance(e, dict) and e.get("1") == 1:
+                sub = e.get("2")
+                code = None
+                if isinstance(sub, dict):
+                    try:
+                        code = int(sub.get("1"))
+                    except (ValueError, TypeError):
+                        code = None
+                return self._STATION_ACTIVITY.get(code, "Servicing")
+        return ""
+
+    def _user_action(self, rbs: dict) -> str:
+        f3 = rbs.get("3")
+        if isinstance(f3, dict):
+            try:
+                return self._USER_ACTION.get(int(f3.get("16")), "")
+            except (ValueError, TypeError):
+                return ""
+        return ""
+
+    def _cleaning_progress(self, state: NarwalState):
+        p = self._f32(state.raw_working_status.get("1"))
+        if p is not None and 0 <= p <= 100:
+            return int(round(p))
+        return None
 
     @staticmethod
-    def _mop_name(mop):
-        if mop is None:
-            return ""
+    def _current_room_name(state: NarwalState) -> str:
+        """Current room from working_status field 6 (= room_id, PR #24)."""
         try:
-            return MopHumidity(mop).name.title()
-        except ValueError:
-            return f"Level {mop}"
-
-    @staticmethod
-    def _clean_mode_name(suction, mop):
-        if suction is None and mop is None:
+            rid = int(state.raw_working_status.get("6", 0))
+        except (ValueError, TypeError):
             return ""
-        s = suction or 0
-        m = mop or 0
-        if s > 0 and m > 0:
-            return "Vacuum & Mop"
-        if s > 0:
-            return "Vacuum"
-        if m > 0:
-            return "Mop"
-        return "—"
+        if rid <= 0 or not state.map_data:
+            return ""
+        for room in state.map_data.rooms:
+            if room.room_id == rid:
+                return room.display_name
+        return ""
+
+    def _station_states(self, state: NarwalState) -> list:
+        """Station/consumable diagnostics from base_status (PR #52)."""
+        rbs = state.raw_base_status
+        kv = []
+        needs_attention = False
+
+        def _tank(field, table, key):
+            nonlocal needs_attention
+            v = rbs.get(field)
+            if isinstance(v, int):
+                kv.append({"key": key, "value": table.get(v, f"State {v}")})
+                if v != 1:
+                    needs_attention = True
+
+        _tank("23", self._WATER_TANK, "waterTank")
+        _tank("24", self._BIN_STATE, "sewageTank")
+        _tank("20", self._BIN_STATE, "dustBox")
+        _tank("39", self._BIN_STATE, "stationBag")
+
+        health = self._f32(rbs.get("35"))
+        if health is not None and 0 <= health <= 100:
+            kv.append({"key": "dustBagHealth", "value": int(round(health)),
+                       "uiValue": f"{int(round(health))}%"})
+        if isinstance(rbs.get("41"), int):
+            kv.append({"key": "detergentRemaining", "value": int(rbs["41"]),
+                       "uiValue": f"{int(rbs['41'])}%"})
+
+        # field 1 = error code(s); empty dict/list = no error.
+        err = rbs.get("1")
+        has_error = bool(err) and isinstance(err, (dict, list)) and len(err) > 0
+        if self._user_action(rbs):
+            needs_attention = True
+        kv.append({"key": "hasError", "value": has_error})
+        kv.append({"key": "needsAttention", "value": needs_attention})
+        return kv
 
     def _safe_update(self, dev, key_values: list[dict]) -> None:
         """Write states, auto-registering any that aren't present yet."""
@@ -720,11 +881,9 @@ class Plugin(indigo.PluginBase):
 
         if prev:
             if is_cleaning and not prev.get("cleaning", False):
-                # New cleaning session — start a fresh trail + swept-area and
-                # force a re-render.
-                self._trail[dev_id] = []
-                self._cleaned_cells[dev_id] = set()
-                self._last_map_render.pop(dev_id, None)
+                # Fire the trigger on the cleaning transition. Coverage/trail are
+                # reset separately, by session_id change (see _check_session), so
+                # a mid-clean dock visit doesn't wipe accumulated coverage.
                 self._fire_triggers("cleaningStarted", dev_id)
             if prev.get("cleaning", False) and is_docked and not is_cleaning:
                 self._fire_triggers("cleaningFinished", dev_id)
@@ -828,21 +987,26 @@ class Plugin(indigo.PluginBase):
         base_status / working_status dicts (where undecoded fields live)."""
         log = self.logger.log
         d_cleaning, d_docked, d_charging, d_returning, d_atdock = self._derive_flags(state)
-        suction, mop = self._parse_clean_config(state.raw_base_status)
+        cfg = self._parse_clean_config(state.raw_base_status)
         log(level, "===== %s: full robot state =====", dev.name)
         log(level, "  working_status = %s (%d)", state.working_status.name, int(state.working_status))
         log(level, "  DERIVED: is_cleaning=%s  is_docked=%s  is_charging=%s  is_returning=%s  at_dock=%s",
             d_cleaning, d_docked, d_charging, d_returning, d_atdock)
-        log(level, "  clean config: suction=%s (%s)  mop=%s (%s)  mode=%s",
-            suction, self._fan_name(suction), mop, self._mop_name(mop),
-            self._clean_mode_name(suction, mop))
+        log(level, "  clean: mode=%s  fan=%s(f26=%s)  mop=%s(f29=%s)  current_room=%s  area=%.2f m²  (cfg %s)",
+            self._clean_mode_name(cfg), self._fan_name(state.raw_base_status), state.raw_base_status.get("26"),
+            self._mop_name(state.raw_base_status), state.raw_base_status.get("29"),
+            self._current_room_name(state) or "-", self._cleaned_area_m2(dev.id, state), cfg)
+        log(level, "  progress=%s%%  station_activity=%s  user_action=%s  session=%s  clean_time=%ss",
+            self._cleaning_progress(state), self._station_activity(state.raw_base_status) or "-",
+            self._user_action(state.raw_base_status) or "-", (state.session_id or "")[:8],
+            state.cleaning_time)
         log(level, "  library flags: is_cleaning=%s  is_docked=%s  is_paused=%s  is_returning=%s  is_returning_to_dock=%s",
             state.is_cleaning, state.is_docked, state.is_paused, state.is_returning, state.is_returning_to_dock)
         log(level, "  battery=%d%%  health=%d  cleaning_time=%ds",
             state.battery_level, state.battery_health, state.cleaning_time)
-        log(level, "  cleaned_area(live)=%.2f m² (%d cells)  robot_field13=%d cm² (%.2f m², stuck)",
+        log(level, "  cleaned_area=%.2f m² (%d cells)  coveredArea(f2)=%s  field13=%d(stuck timer)",
             self._cleaned_area_m2(dev.id, state), len(self._cleaned_cells.get(dev.id, ())),
-            state.cleaning_area, state.cleaning_area / 10000.0)
+            self._f32(state.raw_working_status.get("2")), state.cleaning_area)
         log(level, "  dock: field11=%s  field47=%s  sub_state=%s  activity=%s  presence=%s",
             state.dock_field11, state.dock_field47, state.dock_sub_state,
             state.dock_activity, state.dock_presence)
@@ -917,8 +1081,13 @@ class Plugin(indigo.PluginBase):
                     cleaned_alpha = max(30, min(235, int(round(pct / 100.0 * 255))))
                 except (ValueError, TypeError):
                     pass
+            # Burned-in caption so freshness is obvious even in a caching viewer.
+            room = self._current_room_name(state)
+            area = self._cleaned_area_m2(dev.id, state)
+            caption = (f"{datetime.now():%H:%M:%S}  {room or 'Cleaning'}  "
+                       f"{area:g} m2  batt {state.battery_level}%")
             png = narwal_map.compose(base_img, md, disp, trail, cleaned=cleaned,
-                                     cleaned_alpha=cleaned_alpha)
+                                     cleaned_alpha=cleaned_alpha, caption=caption)
             if not png:
                 return
             self.logger.debug(
@@ -998,19 +1167,70 @@ class Plugin(indigo.PluginBase):
         if dev.deviceTypeId != "narwalVacuum":
             return
         if action.deviceAction == indigo.kDeviceAction.TurnOn:
-            self._dispatch(dev, lambda c: c.start(), "start clean (relay ON)")
+            self._do_relay_on(dev)
         elif action.deviceAction == indigo.kDeviceAction.TurnOff:
-            self._dispatch(dev, lambda c: c.return_to_base(), "return to dock (relay OFF)")
+            self._do_relay_off(dev)
         elif action.deviceAction == indigo.kDeviceAction.Toggle:
             if dev.onState:
-                self._dispatch(dev, lambda c: c.return_to_base(), "return to dock (toggle)")
+                self._do_relay_off(dev)
             else:
-                self._dispatch(dev, lambda c: c.start(), "start clean (toggle)")
+                self._do_relay_on(dev)
+
+    def _do_relay_on(self, dev):
+        """Perform the configured 'ON' action (device setting relayOnAction)."""
+        props = dev.pluginProps
+        on_action = props.get("relayOnAction", "start")
+        self._reset_coverage(dev.id, f"relay ON ({on_action})")
+
+        if on_action == "rooms":
+            raw = props.get("relayOnRooms", [])
+            if isinstance(raw, str):
+                raw = [raw]
+            room_ids = []
+            for r in raw:
+                try:
+                    room_ids.append(int(r))
+                except (ValueError, TypeError):
+                    continue
+            if not room_ids:
+                self.logger.warning(
+                    "%s: ON is set to clean rooms but none are selected — "
+                    "starting a whole-house clean instead", dev.name)
+                self._dispatch(dev, lambda c: c.start(), "start clean (relay ON, no rooms)")
+                return
+
+            def _int(key, default):
+                try:
+                    return int(props.get(key, default))
+                except (ValueError, TypeError):
+                    return default
+            mode = _int("relayOnMode", 3)
+            fan = _int("relayOnFan", 2)
+            water = _int("relayOnWater", 2)
+            self._dispatch(dev, lambda c: self._clean_rooms(c, room_ids, mode, fan, water, 1),
+                           f"relay ON: clean rooms {room_ids} mode={self._WORK_MODE.get(mode, mode)}")
+        elif on_action == "easy":
+            self._dispatch(dev, lambda c: c.start_easy_clean(), "easy clean (relay ON)")
+        else:
+            self._dispatch(dev, lambda c: c.start(), "start clean (relay ON)")
+
+    def _do_relay_off(self, dev):
+        """Perform the configured 'OFF' action (device setting relayOffAction)."""
+        off_action = dev.pluginProps.get("relayOffAction", "dock")
+        if off_action == "pause":
+            self._dispatch(dev, lambda c: c.pause(), "pause (relay OFF)")
+        elif off_action == "stop":
+            self._dispatch(dev, lambda c: c.stop(), "stop (relay OFF)")
+        elif off_action == "nothing":
+            self.logger.info("%s: relay OFF — no action configured", dev.name)
+        else:
+            self._dispatch(dev, lambda c: c.return_to_base(), "return to dock (relay OFF)")
 
     # ------------------------------------------------------------------ #
     # Action callbacks                                                    #
     # ------------------------------------------------------------------ #
     def actionStartClean(self, action, dev):
+        self._reset_coverage(dev.id, "start clean requested")
         self._dispatch(dev, lambda c: c.start(), "start clean")
 
     def actionPause(self, action, dev):
@@ -1051,6 +1271,59 @@ class Plugin(indigo.PluginBase):
             level = MopHumidity.WET
         self._dispatch(dev, lambda c: c.set_mop_humidity(level), f"set mop humidity {level.name}")
 
+    # WorkMode -> (CleanParam.mode value, pass-count field tags). From upstream
+    # PR #49/#50 (clean/start_clean CleanTask schema).
+    _WORK_MODE_PARAM = {
+        1: (2, ("5",)),        # Vacuum
+        2: (3, ("6",)),        # Mop
+        3: (5, ("5", "6")),    # Vacuum then Mop
+        4: (4, ("7",)),        # Vacuum & Mop (one pass)
+    }
+
+    @staticmethod
+    def _active_map_id(client) -> int:
+        md = getattr(client, "state", None) and client.state.map_data
+        if md and isinstance(getattr(md, "raw", None), dict):
+            try:
+                return int(md.raw.get("1", 0))
+            except (ValueError, TypeError):
+                return 0
+        return 0
+
+    def _build_room_clean_payload(self, map_id, room_ids, work_mode, fan, water,
+                                  passes, mop_strength=1):
+        """Build the CleanTask room-clean protobuf (upstream PR #49 schema).
+
+        Envelope: {1: map_id, 2: [CleanItem], 3: {}, 5: work_mode}. Each CleanItem
+        = {1: {1: 1(=ROOM), 2: room_id}, 2: CleanParam, 3: order}. CleanParam
+        = {1: mode, 2: fan, 3: mop_strength, 4: water, <pass tags>: passes}."""
+        import blackboxprotobuf
+
+        param_mode, pass_tags = self._WORK_MODE_PARAM.get(work_mode, (5, ("5", "6")))
+        items = []
+        for i, rid in enumerate(room_ids):
+            param = {"1": param_mode, "2": fan, "3": mop_strength, "4": water}
+            for t in pass_tags:
+                param[t] = passes
+            items.append({"1": {"1": 1, "2": rid}, "2": param, "3": i + 1})
+
+        param_tags = sorted({"1", "2", "3", "4", *pass_tags}, key=int)
+        item_typedef = {
+            "type": "message", "seen_repeated": True,
+            "message_typedef": {
+                "1": {"type": "message", "message_typedef": {"1": {"type": "int"}, "2": {"type": "int"}}},
+                "2": {"type": "message", "message_typedef": {t: {"type": "int"} for t in param_tags}},
+                "3": {"type": "int"},
+            },
+        }
+        msg = {"1": {"1": int(map_id), "2": items if len(items) > 1 else items[0],
+                     "3": {}, "5": int(work_mode)}}
+        typedef = {"1": {"type": "message", "message_typedef": {
+            "1": {"type": "int"}, "2": item_typedef,
+            "3": {"type": "message", "message_typedef": {}}, "5": {"type": "int"},
+        }}}
+        return blackboxprotobuf.encode_message(msg, typedef)
+
     def actionCleanRooms(self, action, dev):
         raw = action.props.get("rooms", [])
         if isinstance(raw, str):
@@ -1064,7 +1337,54 @@ class Plugin(indigo.PluginBase):
         if not room_ids:
             self.logger.warning("%s: clean rooms — no valid rooms selected", dev.name)
             return
-        self._dispatch(dev, lambda c: c.start_rooms(room_ids), f"clean rooms {room_ids}")
+
+        def _opt(key, default):
+            try:
+                return int(action.props.get(key, default))
+            except (ValueError, TypeError):
+                return default
+
+        mode = _opt("mode", 3)
+        fan = _opt("fan", 2)
+        water = _opt("water", 2)
+        passes = _opt("passes", 1)
+        desc = (f"clean rooms {room_ids} (mode={self._WORK_MODE.get(mode, mode)}, "
+                f"fan={self._FAN_LEVELS.get(fan, fan)}, water={self._WATER_LEVELS.get(water, water)}, "
+                f"passes={passes})")
+        self._reset_coverage(dev.id, "room clean requested")
+        self._dispatch(dev, lambda c: self._clean_rooms(c, room_ids, mode, fan, water, passes), desc)
+
+    async def _clean_rooms(self, client, room_ids, work_mode, fan, water, passes):
+        """Room-specific clean with a selectable mode (PR #49 CleanTask schema).
+
+        Sends the new clean/start_clean CleanTask; falls back to the vendored
+        start_rooms (clean/plan/start, mode not applied) if it isn't accepted or
+        the payload can't be built."""
+        from narwal_client.const import CommandResult
+
+        map_id = self._active_map_id(client)
+        try:
+            payload = self._build_room_clean_payload(map_id, room_ids, work_mode, fan, water, passes)
+        except Exception:
+            self.logger.exception("Could not build room-clean payload — using library start_rooms")
+            return await client.start_rooms(room_ids)
+
+        resp = await client.send_command("clean/start_clean", payload=payload, timeout=12.0)
+        try:
+            result_name = CommandResult(resp.result_code).name
+        except ValueError:
+            result_name = f"UNKNOWN({resp.result_code})"
+
+        if resp.success:
+            self.logger.info("Room clean accepted (%s): rooms=%s mode=%s",
+                             result_name, room_ids, self._WORK_MODE.get(work_mode, work_mode))
+            return resp
+
+        self.logger.warning(
+            "Room clean via clean/start_clean not accepted (%s) — falling back to library "
+            "start_rooms (mode ignored). CONFLICT/NOT_APPLICABLE usually means the robot is "
+            "busy or mid-dock-cycle; try when idle on the dock.", result_name)
+        return await client.start_rooms(room_ids)
 
     def actionRefreshMap(self, action, dev):
         self._last_map_render.pop(dev.id, None)

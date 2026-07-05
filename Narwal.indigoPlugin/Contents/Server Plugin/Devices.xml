@@ -38,6 +38,59 @@ Optionally press the button below to fetch them now (the robot must be powered a
                 <Label>Discovery result:</Label>
             </Field>
 
+            <Field id="sep_relay" type="separator"/>
+            <Field id="relayLabel" type="label" fontSize="small">
+                <Label>Choose what turning this device On/Off (relay, control pages, on/off actions) does.</Label>
+            </Field>
+            <Field id="relayOnAction" type="menu" defaultValue="start">
+                <Label>When switched ON:</Label>
+                <List>
+                    <Option value="start">Start whole-house clean</Option>
+                    <Option value="rooms">Clean selected room(s)</Option>
+                    <Option value="easy">Easy / quick clean</Option>
+                </List>
+            </Field>
+            <Field id="relayOnRooms" type="list" visibleBindingId="relayOnAction" visibleBindingValue="rooms">
+                <Label>Room(s) to clean:</Label>
+                <List class="self" method="roomListGenerator" dynamicReload="true"/>
+            </Field>
+            <Field id="relayOnMode" type="menu" defaultValue="3" visibleBindingId="relayOnAction" visibleBindingValue="rooms">
+                <Label>Mode:</Label>
+                <List>
+                    <Option value="1">Vacuum only</Option>
+                    <Option value="2">Mop only</Option>
+                    <Option value="3">Vacuum then Mop</Option>
+                    <Option value="4">Vacuum &amp; Mop (one pass)</Option>
+                </List>
+            </Field>
+            <Field id="relayOnFan" type="menu" defaultValue="2" visibleBindingId="relayOnAction" visibleBindingValue="rooms">
+                <Label>Suction:</Label>
+                <List>
+                    <Option value="1">Mute</Option>
+                    <Option value="2">Normal</Option>
+                    <Option value="3">Strong</Option>
+                    <Option value="4">Deep</Option>
+                    <Option value="5">Super</Option>
+                </List>
+            </Field>
+            <Field id="relayOnWater" type="menu" defaultValue="2" visibleBindingId="relayOnAction" visibleBindingValue="rooms">
+                <Label>Mop wetness:</Label>
+                <List>
+                    <Option value="1">Dry</Option>
+                    <Option value="2">Normal</Option>
+                    <Option value="3">Wet</Option>
+                </List>
+            </Field>
+            <Field id="relayOffAction" type="menu" defaultValue="dock">
+                <Label>When switched OFF:</Label>
+                <List>
+                    <Option value="dock">Return to dock</Option>
+                    <Option value="pause">Pause</Option>
+                    <Option value="stop">Stop</Option>
+                    <Option value="nothing">Do nothing</Option>
+                </List>
+            </Field>
+
             <Field id="sep_map" type="separator"/>
 
             <Field id="renderMap" type="checkbox" defaultValue="true">
@@ -48,9 +101,9 @@ Optionally press the button below to fetch them now (the robot must be powered a
                 <Label>Update map frequently while cleaning</Label>
                 <Description>When cleaning, re-render the map roughly every 15s to track the robot live; otherwise every ~60s.</Description>
             </Field>
-            <Field id="showTrail" type="checkbox" defaultValue="false" visibleBindingId="renderMap" visibleBindingValue="true">
+            <Field id="showTrail" type="checkbox" defaultValue="true" visibleBindingId="renderMap" visibleBindingValue="true">
                 <Label>Show robot travel trail (orange)</Label>
-                <Description>Draws the robot's path. This includes travel/navigation moves (which can appear to cross walls), so it's off by default — the cleaned-area overlay is the accurate coverage view.</Description>
+                <Description>Draws the robot's path. Long jumps (travel/navigation moves) are broken so the line doesn't cross walls. Turn off to show only the cleaned-area overlay.</Description>
             </Field>
             <Field id="mapDir" type="textfield" visibleBindingId="renderMap" visibleBindingValue="true">
                 <Label>Map output folder (optional):</Label>
@@ -127,6 +180,21 @@ Optionally press the button below to fetch them now (the robot must be powered a
                 <TriggerLabel>Cleaning Time (min)</TriggerLabel>
                 <ControlPageLabel>Cleaning Time (min)</ControlPageLabel>
             </State>
+            <State id="cleaningProgress">
+                <ValueType>Integer</ValueType>
+                <TriggerLabel>Cleaning Progress (%)</TriggerLabel>
+                <ControlPageLabel>Cleaning Progress (%)</ControlPageLabel>
+            </State>
+            <State id="stationActivity">
+                <ValueType>String</ValueType>
+                <TriggerLabel>Station Activity</TriggerLabel>
+                <ControlPageLabel>Station Activity</ControlPageLabel>
+            </State>
+            <State id="userAction">
+                <ValueType>String</ValueType>
+                <TriggerLabel>User Action Required</TriggerLabel>
+                <ControlPageLabel>User Action Required</ControlPageLabel>
+            </State>
             <State id="firmwareVersion">
                 <ValueType>String</ValueType>
                 <TriggerLabel>Firmware Version</TriggerLabel>
@@ -151,6 +219,51 @@ Optionally press the button below to fetch them now (the robot must be powered a
                 <ValueType>Boolean</ValueType>
                 <TriggerLabel>At Dock (servicing)</TriggerLabel>
                 <ControlPageLabel>At Dock (servicing)</ControlPageLabel>
+            </State>
+            <State id="currentRoom">
+                <ValueType>String</ValueType>
+                <TriggerLabel>Current Room</TriggerLabel>
+                <ControlPageLabel>Current Room</ControlPageLabel>
+            </State>
+            <State id="waterTank">
+                <ValueType>String</ValueType>
+                <TriggerLabel>Clean Water Tank</TriggerLabel>
+                <ControlPageLabel>Clean Water Tank</ControlPageLabel>
+            </State>
+            <State id="sewageTank">
+                <ValueType>String</ValueType>
+                <TriggerLabel>Sewage Tank</TriggerLabel>
+                <ControlPageLabel>Sewage Tank</ControlPageLabel>
+            </State>
+            <State id="dustBox">
+                <ValueType>String</ValueType>
+                <TriggerLabel>Dust Box</TriggerLabel>
+                <ControlPageLabel>Dust Box</ControlPageLabel>
+            </State>
+            <State id="stationBag">
+                <ValueType>String</ValueType>
+                <TriggerLabel>Station Dust Bag</TriggerLabel>
+                <ControlPageLabel>Station Dust Bag</ControlPageLabel>
+            </State>
+            <State id="dustBagHealth">
+                <ValueType>Integer</ValueType>
+                <TriggerLabel>Dust Bag Health (%)</TriggerLabel>
+                <ControlPageLabel>Dust Bag Health (%)</ControlPageLabel>
+            </State>
+            <State id="detergentRemaining">
+                <ValueType>Integer</ValueType>
+                <TriggerLabel>Detergent Remaining (%)</TriggerLabel>
+                <ControlPageLabel>Detergent Remaining (%)</ControlPageLabel>
+            </State>
+            <State id="needsAttention">
+                <ValueType>Boolean</ValueType>
+                <TriggerLabel>Station Needs Attention</TriggerLabel>
+                <ControlPageLabel>Station Needs Attention</ControlPageLabel>
+            </State>
+            <State id="hasError">
+                <ValueType>Boolean</ValueType>
+                <TriggerLabel>Has Error</TriggerLabel>
+                <ControlPageLabel>Has Error</ControlPageLabel>
             </State>
             <State id="deviceId">
                 <ValueType>String</ValueType>

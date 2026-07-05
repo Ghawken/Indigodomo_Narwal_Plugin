@@ -85,25 +85,32 @@
                 <Label>Rooms:</Label>
                 <List class="self" method="roomListGenerator" dynamicReload="true"/>
             </Field>
-            <Field id="suction" type="menu" defaultValue="3">
+            <Field id="mode" type="menu" defaultValue="3">
+                <Label>Cleaning mode:</Label>
+                <List>
+                    <Option value="1">Vacuum only</Option>
+                    <Option value="2">Mop only</Option>
+                    <Option value="3">Vacuum then Mop</Option>
+                    <Option value="4">Vacuum &amp; Mop (one pass)</Option>
+                </List>
+            </Field>
+            <Field id="fan" type="menu" defaultValue="2">
                 <Label>Suction:</Label>
                 <List>
-                    <Option value="0">Quiet</Option>
-                    <Option value="1">Normal</Option>
-                    <Option value="2">Strong</Option>
-                    <Option value="3">Max</Option>
+                    <Option value="1">Mute</Option>
+                    <Option value="2">Normal</Option>
+                    <Option value="3">Strong</Option>
+                    <Option value="4">Deep</Option>
+                    <Option value="5">Super</Option>
                 </List>
             </Field>
-            <Field id="mop" type="menu" defaultValue="2">
+            <Field id="water" type="menu" defaultValue="2">
                 <Label>Mop wetness:</Label>
                 <List>
-                    <Option value="0">Dry (vacuum-focused)</Option>
-                    <Option value="1">Normal</Option>
-                    <Option value="2">Wet</Option>
+                    <Option value="1">Dry</Option>
+                    <Option value="2">Normal</Option>
+                    <Option value="3">Wet</Option>
                 </List>
-            </Field>
-            <Field id="labelMop" type="label" fontSize="small" fontColor="darkgray">
-                <Label>The Flow vacuums and mops in one pass; set Mop wetness to Dry for a vacuum-focused clean.</Label>
             </Field>
             <Field id="passes" type="menu" defaultValue="1">
                 <Label>Passes:</Label>
