@@ -663,6 +663,17 @@ class Plugin(indigo.PluginBase):
             return
         client = self._clients.get(dev_id)
 
+        # No real data yet (robot asleep at connect: empty base/working status).
+        # Don't blank out the device's good states with UNKNOWN/0 — just reflect
+        # the connection and wait for the first real broadcast.
+        if (not state.raw_base_status and not state.raw_working_status
+                and state.working_status == WorkingStatus.UNKNOWN):
+            kv = [{"key": "connected", "value": bool(client and client.connected)}]
+            if client is not None:
+                kv.append({"key": "robotAwake", "value": client.robot_awake})
+            self._safe_update(dev, kv)
+            return
+
         is_cleaning, is_docked, is_charging, is_returning, at_dock = self._derive_flags(state)
         rooms = state.map_data.rooms if state.map_data else []
         room_names = ", ".join(r.display_name for r in rooms)
