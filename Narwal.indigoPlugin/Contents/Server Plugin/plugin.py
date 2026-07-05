@@ -78,6 +78,8 @@ class Plugin(indigo.PluginBase):
         self._last_map_render: dict[int, float] = {}
         # dev.id -> monotonic time of last fallback status poll
         self._last_status_poll: dict[int, float] = {}
+        # dev.id -> monotonic time of last get_map recovery fetch
+        self._last_map_fetch: dict[int, float] = {}
         # dev.id -> monotonic time of last full-state debug dump
         self._last_full_log: dict[int, float] = {}
 
@@ -172,6 +174,7 @@ class Plugin(indigo.PluginBase):
                 asyncio.run_coroutine_threadsafe(client.disconnect(), loop)
         self._last_map_render.pop(dev.id, None)
         self._last_status_poll.pop(dev.id, None)
+        self._last_map_fetch.pop(dev.id, None)
         self._last_full_log.pop(dev.id, None)
         self._prev.pop(dev.id, None)
         self._trail.pop(dev.id, None)
@@ -209,6 +212,12 @@ class Plugin(indigo.PluginBase):
             device_id = (props.get("deviceId") or "").strip()
             topic_prefix = self._normalise_prefix(props.get("topicPrefix"))
 
+            # Keep the previous client's map so a reconnect (e.g. after a dock
+            # visit) whose get_map fails doesn't lose it and stall rendering.
+            prev_client = self._clients.get(dev_id)
+            prev_map = (prev_client.state.map_data
+                        if prev_client and getattr(prev_client, "state", None) else None)
+
             client = NarwalClient(
                 host=host, port=port, device_id=device_id, topic_prefix=topic_prefix
             )
@@ -240,6 +249,12 @@ class Plugin(indigo.PluginBase):
                 await client.subscribe_to_topics()
             except Exception:
                 self.logger.debug("%s: topic subscription failed at startup", dev.name)
+
+            # If get_map didn't succeed on this (re)connect, reuse the last-known
+            # map so the renderer keeps working (recovery poll re-fetches later).
+            if (not client.state.map_data or not client.state.map_data.compressed_map) and prev_map:
+                client.state.map_data = prev_map
+                self.logger.info("%s: kept previous map (get_map unavailable this connect)", dev.name)
 
             # Restore the last cleaning trail + swept area from disk so they're
             # visible immediately after a plugin reload (like re-opening the app).
@@ -937,6 +952,7 @@ class Plugin(indigo.PluginBase):
                         continue
                     self._watchdog(dev, now)
                     self._maybe_poll_status(dev, now)
+                    self._maybe_recover_map(dev, now)
                     self._maybe_render_map(dev, now)
                     self._maybe_full_log(dev, now)
         except self.StopThread:
@@ -1025,6 +1041,24 @@ class Plugin(indigo.PluginBase):
         log(level, "  raw_working_status = %r", state.raw_working_status)
         log(level, "===== end %s state =====", dev.name)
 
+    def _maybe_recover_map(self, dev, now: float) -> None:
+        """Re-fetch the map if it's missing while the robot is reachable.
+
+        get_map is only called once at connect; if it failed (robot busy resuming
+        after a dock visit) the map would otherwise stay missing and rendering
+        would stall. This retries every 45s until a map is loaded."""
+        client = self._clients.get(dev.id)
+        if client is None or not client.connected or not client.robot_awake:
+            return
+        md = client.state.map_data
+        if md and md.compressed_map:
+            return
+        if now - self._last_map_fetch.get(dev.id, 0.0) < 45.0:
+            return
+        self._last_map_fetch[dev.id] = now
+        self.logger.info("%s: map missing — re-fetching get_map()", dev.name)
+        self._run_coro(client.get_map())
+
     def _maybe_render_map(self, dev, now: float) -> None:
         if not dev.pluginProps.get("renderMap", True):
             return
@@ -1033,9 +1067,12 @@ class Plugin(indigo.PluginBase):
             return
         state = client.state
         if not state.map_data or not state.map_data.compressed_map:
+            # No map yet — _maybe_recover_map re-fetches it while reachable.
             return
-        # Throttle: ~15s while cleaning (if enabled), else ~60s.
-        fast = dev.pluginProps.get("mapWhileCleaning", True) and state.is_cleaning
+        # Fast (~15s) whenever the robot is broadcasting (awake) — this keeps the
+        # robot/coverage moving through docking transitions where the library
+        # is_cleaning flag goes momentarily stale; otherwise a ~60s heartbeat.
+        fast = dev.pluginProps.get("mapWhileCleaning", True) and client.robot_awake
         interval = 15.0 if fast else 60.0
         if now - self._last_map_render.get(dev.id, 0.0) < interval:
             return
