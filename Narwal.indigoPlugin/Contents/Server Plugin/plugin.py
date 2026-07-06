@@ -400,7 +400,7 @@ class Plugin(indigo.PluginBase):
         vendored library instead reads field 13, a station-dry timer stuck at
         18000 (=1.8 m²) — that's the wrong one. Falls back to the distinct
         cleaned-cell count, then field 13, only if field 2 is absent."""
-        area = self._f32(state.raw_working_status.get("2"))
+        area = self._f32(self._d(state.raw_working_status).get("2"))
         if area is not None and 0 <= area < 100000:
             return round(area, 2)
         cells = self._cleaned_cells.get(dev_id)
@@ -785,11 +785,17 @@ class Plugin(indigo.PluginBase):
     _LIVE_FAN = {1: "Quiet", 2: "Normal", 3: "Strong", 4: "Super Powerful"}
     _LIVE_MOP = {1: "Slightly Dry", 2: "Standard", 3: "Slightly Wet"}
 
-    def _fan_name(self, rbs: dict) -> str:
-        return self._LIVE_FAN.get(rbs.get("26"), "")
+    @staticmethod
+    def _d(v):
+        """Coerce to a dict — the library can store a str/bytes in raw_* fields
+        when a protobuf field decodes as a scalar; guards all .get() access."""
+        return v if isinstance(v, dict) else {}
 
-    def _mop_name(self, rbs: dict) -> str:
-        return self._LIVE_MOP.get(rbs.get("29"), "")
+    def _fan_name(self, rbs) -> str:
+        return self._LIVE_FAN.get(self._d(rbs).get("26"), "")
+
+    def _mop_name(self, rbs) -> str:
+        return self._LIVE_MOP.get(self._d(rbs).get("29"), "")
 
     def _clean_mode_name(self, cfg: dict) -> str:
         return self._WORK_MODE.get(cfg.get("mode"), "")
@@ -805,8 +811,8 @@ class Plugin(indigo.PluginBase):
     _USER_ACTION = {2: "Fill water tank", 3: "Empty / return after clean",
                     4: "Ready — start clean"}
 
-    def _station_activity(self, rbs: dict) -> str:
-        f48 = rbs.get("48")
+    def _station_activity(self, rbs) -> str:
+        f48 = self._d(rbs).get("48")
         if not isinstance(f48, dict):
             return ""
         entries = f48.get("1", [])
@@ -824,8 +830,8 @@ class Plugin(indigo.PluginBase):
                 return self._STATION_ACTIVITY.get(code, "Servicing")
         return ""
 
-    def _user_action(self, rbs: dict) -> str:
-        f3 = rbs.get("3")
+    def _user_action(self, rbs) -> str:
+        f3 = self._d(rbs).get("3")
         if isinstance(f3, dict):
             try:
                 return self._USER_ACTION.get(int(f3.get("16")), "")
@@ -834,16 +840,15 @@ class Plugin(indigo.PluginBase):
         return ""
 
     def _cleaning_progress(self, state: NarwalState):
-        p = self._f32(state.raw_working_status.get("1"))
+        p = self._f32(self._d(state.raw_working_status).get("1"))
         if p is not None and 0 <= p <= 100:
             return int(round(p))
         return None
 
-    @staticmethod
-    def _current_room_name(state: NarwalState) -> str:
+    def _current_room_name(self, state: NarwalState) -> str:
         """Current room from working_status field 6 (= room_id, PR #24)."""
         try:
-            rid = int(state.raw_working_status.get("6", 0))
+            rid = int(self._d(state.raw_working_status).get("6", 0))
         except (ValueError, TypeError):
             return ""
         if rid <= 0 or not state.map_data:
@@ -855,7 +860,7 @@ class Plugin(indigo.PluginBase):
 
     def _station_states(self, state: NarwalState) -> list:
         """Station/consumable diagnostics from base_status (PR #52)."""
-        rbs = state.raw_base_status
+        rbs = self._d(state.raw_base_status)
         kv = []
         needs_attention = False
 
@@ -1025,8 +1030,8 @@ class Plugin(indigo.PluginBase):
         log(level, "  DERIVED: is_cleaning=%s  is_docked=%s  is_charging=%s  is_returning=%s  at_dock=%s",
             d_cleaning, d_docked, d_charging, d_returning, d_atdock)
         log(level, "  clean: mode=%s  fan=%s(f26=%s)  mop=%s(f29=%s)  current_room=%s  area=%.2f m²  (cfg %s)",
-            self._clean_mode_name(cfg), self._fan_name(state.raw_base_status), state.raw_base_status.get("26"),
-            self._mop_name(state.raw_base_status), state.raw_base_status.get("29"),
+            self._clean_mode_name(cfg), self._fan_name(state.raw_base_status), self._d(state.raw_base_status).get("26"),
+            self._mop_name(state.raw_base_status), self._d(state.raw_base_status).get("29"),
             self._current_room_name(state) or "-", self._cleaned_area_m2(dev.id, state), cfg)
         log(level, "  progress=%s%%  station_activity=%s  user_action=%s  session=%s  clean_time=%ss",
             self._cleaning_progress(state), self._station_activity(state.raw_base_status) or "-",
@@ -1038,7 +1043,7 @@ class Plugin(indigo.PluginBase):
             state.battery_level, state.battery_health, state.cleaning_time)
         log(level, "  cleaned_area=%.2f m² (%d cells)  coveredArea(f2)=%s  field13=%d(stuck timer)",
             self._cleaned_area_m2(dev.id, state), len(self._cleaned_cells.get(dev.id, ())),
-            self._f32(state.raw_working_status.get("2")), state.cleaning_area)
+            self._f32(self._d(state.raw_working_status).get("2")), state.cleaning_area)
         log(level, "  dock: field11=%s  field47=%s  sub_state=%s  activity=%s  presence=%s",
             state.dock_field11, state.dock_field47, state.dock_sub_state,
             state.dock_activity, state.dock_presence)
