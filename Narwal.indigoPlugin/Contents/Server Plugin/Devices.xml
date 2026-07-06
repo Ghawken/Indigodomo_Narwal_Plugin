@@ -105,6 +105,17 @@ Optionally press the button below to fetch them now (the robot must be powered a
                 <Label>Show robot travel trail (orange)</Label>
                 <Description>Draws the robot's path. Long jumps (travel/navigation moves) are broken so the line doesn't cross walls. Turn off to show only the cleaned-area overlay.</Description>
             </Field>
+            <Field id="idleClearMinutes" type="menu" defaultValue="15" visibleBindingId="renderMap" visibleBindingValue="true">
+                <Label>Clear overlay after idle for:</Label>
+                <List>
+                    <Option value="0">Never (keep last clean)</Option>
+                    <Option value="5">5 minutes</Option>
+                    <Option value="15">15 minutes</Option>
+                    <Option value="30">30 minutes</Option>
+                    <Option value="60">1 hour</Option>
+                </List>
+                <Description>Once the robot has been idle/docked this long after a clean, clear the coverage and trail so the map shows just the floor plan.</Description>
+            </Field>
             <Field id="mapDir" type="textfield" visibleBindingId="renderMap" visibleBindingValue="true">
                 <Label>Map output folder (optional):</Label>
                 <Description>Leave blank to use the Indigo install's Web Assets/images/narwal folder. The file is named narwal_map_&lt;deviceId&gt;.png.</Description>

@@ -80,6 +80,9 @@ class Plugin(indigo.PluginBase):
         self._last_status_poll: dict[int, float] = {}
         # dev.id -> monotonic time of last get_map recovery fetch
         self._last_map_fetch: dict[int, float] = {}
+        # dev.id -> monotonic time the robot was last actively cleaning (drives
+        # the "clear overlay after idle" behaviour).
+        self._last_active: dict[int, float] = {}
         # dev.id -> monotonic time of last full-state debug dump
         self._last_full_log: dict[int, float] = {}
 
@@ -175,6 +178,7 @@ class Plugin(indigo.PluginBase):
         self._last_map_render.pop(dev.id, None)
         self._last_status_poll.pop(dev.id, None)
         self._last_map_fetch.pop(dev.id, None)
+        self._last_active.pop(dev.id, None)
         self._last_full_log.pop(dev.id, None)
         self._prev.pop(dev.id, None)
         self._trail.pop(dev.id, None)
@@ -964,6 +968,7 @@ class Plugin(indigo.PluginBase):
                     self._watchdog(dev, now)
                     self._maybe_poll_status(dev, now)
                     self._maybe_recover_map(dev, now)
+                    self._maybe_idle_clear(dev, now)
                     self._maybe_render_map(dev, now)
                     self._maybe_full_log(dev, now)
         except self.StopThread:
@@ -1069,6 +1074,42 @@ class Plugin(indigo.PluginBase):
         self._last_map_fetch[dev.id] = now
         self.logger.info("%s: map missing — re-fetching get_map()", dev.name)
         self._run_coro(client.get_map())
+
+    def _maybe_idle_clear(self, dev, now: float) -> None:
+        """Clear the cleaned overlay + trail once the robot has been idle (not
+        cleaning) for the configured time, so the map falls back to the bare
+        floor plan. Setting 'Never' keeps the last clean's coverage."""
+        try:
+            mins = int(dev.pluginProps.get("idleClearMinutes", 15))
+        except (ValueError, TypeError):
+            mins = 15
+        if mins <= 0:
+            return
+        client = self._clients.get(dev.id)
+        if client is None:
+            return
+        if self._derive_flags(client.state)[0]:  # is_cleaning -> reset the idle clock
+            self._last_active[dev.id] = now
+            return
+        last = self._last_active.get(dev.id)
+        if last is None:
+            self._last_active[dev.id] = now  # start the idle clock (e.g. on connect)
+            return
+        if now - last < mins * 60:
+            return
+        if self._cleaned_cells.get(dev.id) or self._trail.get(dev.id):
+            self.logger.info("%s: idle %d min — clearing map overlay & trail", dev.name, mins)
+            self._cleaned_cells[dev.id] = set()
+            self._trail[dev.id] = []
+            self._delete_coverage_files(dev)
+            self._last_map_render.pop(dev.id, None)  # force one blank re-render
+
+    def _delete_coverage_files(self, dev) -> None:
+        for path in (self._trail_file(dev), self._cleaned_file(dev)):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
     def _maybe_render_map(self, dev, now: float) -> None:
         if not dev.pluginProps.get("renderMap", True):
