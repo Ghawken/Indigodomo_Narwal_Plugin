@@ -343,6 +343,21 @@ class Plugin(indigo.PluginBase):
         self._trail[dev_id] = []
         self._cleaned_cells[dev_id] = set()
         self._last_map_render.pop(dev_id, None)
+        # Restart the idle clock so a freshly-started clean can't be immediately
+        # cleared by a stale _last_active from a previous (long-idle) session.
+        self._last_active[dev_id] = time.monotonic()
+
+    @classmethod
+    def _task_active(cls, state: NarwalState) -> bool:
+        """True while a clean is in progress (through undocking, mid-clean dock
+        visits and the vacuum->mop transition). Coverage/trail are only
+        accumulated while active, so they don't grow — and get repeatedly
+        idle-cleared — when the robot is parked."""
+        is_cleaning, _dk, _ch, is_returning, _ad = cls._derive_flags(state)
+        return (is_cleaning or is_returning
+                or state.working_status in (WorkingStatus.CLEANING,
+                                            WorkingStatus.CLEANING_ALT,
+                                            WorkingStatus.TASK_COMPLETED))
 
     def _sample_trail(self, dev_id: int, state: NarwalState) -> None:
         """Append the robot's current grid position to this session's trail.
@@ -351,6 +366,8 @@ class Plugin(indigo.PluginBase):
         is far smoother than sampling only at render time. Points are stored in
         grid coordinates and de-duplicated / bounded.
         """
+        if not self._task_active(state):
+            return
         md = state.map_data
         disp = state.map_display_data
         if not md or disp is None:
@@ -387,9 +404,14 @@ class Plugin(indigo.PluginBase):
                 self._dump_map_next = False
                 self._dump_display_map(dev_id, msg.payload, decoded)
 
-            indices = self._decode_cleaned_indices(decoded)
-            if indices:
-                self._cleaned_cells.setdefault(dev_id, set()).update(indices)
+            # Only accumulate cleaned cells while a clean is active — otherwise a
+            # parked robot's broadcasts would keep repopulating the overlay and
+            # the idle-clear would wipe it every few seconds forever.
+            client = self._clients.get(dev_id)
+            if client is not None and self._task_active(client.state):
+                indices = self._decode_cleaned_indices(decoded)
+                if indices:
+                    self._cleaned_cells.setdefault(dev_id, set()).update(indices)
         except Exception:
             self.logger.debug("%s: raw display_map handling failed", dev_id, exc_info=True)
 
@@ -1093,7 +1115,7 @@ class Plugin(indigo.PluginBase):
         client = self._clients.get(dev.id)
         if client is None:
             return
-        if self._derive_flags(client.state)[0]:  # is_cleaning -> reset the idle clock
+        if self._task_active(client.state):
             self._last_active[dev.id] = now
             return
         last = self._last_active.get(dev.id)
@@ -1196,8 +1218,9 @@ class Plugin(indigo.PluginBase):
 
             out_dir = self._map_output_dir(dev)
             os.makedirs(out_dir, exist_ok=True)
-            safe_id = (state.device_info.device_id if state.device_info else str(dev.id)) or str(dev.id)
-            safe_id = "".join(c for c in safe_id if c.isalnum() or c in "-_")
+            # Stable filename from the Indigo device id (the robot's device_id
+            # comes and goes as it sleeps/wakes, which would flip the filename).
+            safe_id = "".join(c for c in str(dev.id) if c.isalnum())
             path = os.path.join(out_dir, f"narwal_map_{safe_id}.png")
             tmp = path + ".tmp"
             with open(tmp, "wb") as fh:
