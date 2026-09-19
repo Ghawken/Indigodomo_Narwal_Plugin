@@ -4,8 +4,9 @@ This directory is copied **verbatim** from the upstream Home Assistant integrati
 
   https://github.com/sjmotew/NarwalIntegration  (path: /narwal_client)
 
-Upstream commit: 125d0a3a3409a1109e26ed8c71f204a14b381f60
-Vendored on: 2026-07-05
+Upstream commit: 1a833fc2f45c2daf7b2a0ed3ea4d1637126b2332
+Vendored on: 2026-09-19
+Previous vendored commit: 125d0a3 (2026-07-05)
 
 ## How to update
 1. git clone https://github.com/sjmotew/NarwalIntegration

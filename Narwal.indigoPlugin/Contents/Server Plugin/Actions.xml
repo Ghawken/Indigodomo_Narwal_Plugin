@@ -31,13 +31,14 @@
         <Name>Set Fan Speed</Name>
         <CallbackMethod>actionSetFanSpeed</CallbackMethod>
         <ConfigUI>
-            <Field id="fanLevel" type="menu" defaultValue="3">
+            <Field id="fanLevel" type="menu" defaultValue="2">
                 <Label>Fan speed:</Label>
                 <List>
-                    <Option value="0">Quiet</Option>
-                    <Option value="1">Normal</Option>
-                    <Option value="2">Strong</Option>
-                    <Option value="3">Max</Option>
+                    <Option value="1">Mute</Option>
+                    <Option value="2">Normal</Option>
+                    <Option value="3">Strong</Option>
+                    <Option value="4">Deep</Option>
+                    <Option value="5">Super</Option>
                 </List>
             </Field>
         </ConfigUI>
@@ -49,9 +50,9 @@
             <Field id="mopLevel" type="menu" defaultValue="2">
                 <Label>Mop wetness:</Label>
                 <List>
-                    <Option value="0">Dry</Option>
-                    <Option value="1">Normal</Option>
-                    <Option value="2">Wet</Option>
+                    <Option value="1">Dry</Option>
+                    <Option value="2">Normal</Option>
+                    <Option value="3">Wet</Option>
                 </List>
             </Field>
         </ConfigUI>

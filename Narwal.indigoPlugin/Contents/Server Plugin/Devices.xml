@@ -276,6 +276,21 @@ Optionally press the button below to fetch them now (the robot must be powered a
                 <TriggerLabel>Has Error</TriggerLabel>
                 <ControlPageLabel>Has Error</ControlPageLabel>
             </State>
+            <State id="errorCodes">
+                <ValueType>String</ValueType>
+                <TriggerLabel>Error Code(s)</TriggerLabel>
+                <ControlPageLabel>Error Code(s)</ControlPageLabel>
+            </State>
+            <State id="errorDetail">
+                <ValueType>String</ValueType>
+                <TriggerLabel>Error Detail</TriggerLabel>
+                <ControlPageLabel>Error Detail</ControlPageLabel>
+            </State>
+            <State id="terminateReason">
+                <ValueType>String</ValueType>
+                <TriggerLabel>Last Task Result</TriggerLabel>
+                <ControlPageLabel>Last Task Result</ControlPageLabel>
+            </State>
             <State id="deviceId">
                 <ValueType>String</ValueType>
                 <TriggerLabel>Device ID</TriggerLabel>

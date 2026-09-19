@@ -1,0 +1,6 @@
+.DS_Store
+.idea/
+__pycache__/
+*.pyc
+# Auto-installed by Indigo from requirements.txt — build artifact, not source
+Narwal.indigoPlugin/Contents/Packages/
